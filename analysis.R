@@ -1,4 +1,3 @@
-
 # libraries ---------------------------------------------------------------
 
 library(tidyverse)
@@ -17,6 +16,17 @@ library(Matrix)
 library(caret)
 
 
+
+# functions ---------------------------------------------------------------
+
+# rmse function
+rmse = function(predictions, data, y) {
+  residuals = (predictions - data[[y]])
+  mse = (1/nrow(data)) * sum((residuals^2))
+  rmse = sqrt(mse)
+  return(rmse)
+}
+
 # import data -------------------------------------------------------------
 
 data <-  read.csv("~/GitHub/sl_exam/statistical_learning/sigi_dataset.csv", sep=";")
@@ -25,28 +35,26 @@ data$sigid <- ifelse(data$sigi > 40, 1,0) # add sigi dummy for logistic / knn
 data$lgdp <- log(data$gdp)
 data$lpop <-  log(data$pop)
 
-
-# create dummies from religion, then modify the code accordingly
-sum(is.na(data$rel))
+# create dummies from religion, we keep info on Christianity and Islam (not many others)
 data$rel[is.na(data$rel)] <- "Missing"
-# Assuming 'data' is your dataset and 'cat_var' is your categorical variable
-rel_dummies <- model.matrix(~ rel - 1, data = data, na.action = "na.pass")
-# Merge the dummy variables with the original dataset
-data <- cbind(data, rel_dummies)
+data$relChristian = ifelse(data$rel == "Christianity", 1, 0)
+data$relMuslim = ifelse(data$rel == "Muslim", 1, 0)
+data$relOther = ifelse(!data$rel %in% c("Christianity", "Muslim"), 1, 0)
+
 
 # data we'll use in the analysis
 data_an <-  data |> # subsets only variables necessary for analysis
   filter(!is.na(sigi))|>
-  select(-c(country, code, region, fos, sigid, gdp, pop, relMissing)) 
+  select(-c(country, fos, sigid, gdp, pop, rel)) 
 
 
 # descriptives ------------------------------------------------------------
 
 # What is the relationship between sigi and democracy?
-data |>
+data_an |>
   ggplot(aes(x = dem, y = sigi)) +
-  geom_point() +
-  geom_smooth()
+  geom_point(color = 'region') +
+  geom_smooth() 
 
 #general summary
 summary(data)
@@ -107,27 +115,26 @@ filtered_data |>
 
 # split train and test ----------------------------------------------------
 
-set.seed(1)
+set.seed(42)
 
+# create an index for the train/test division
 train_index =sample(c(TRUE,FALSE), nrow(data_an),rep=TRUE, prob = c(0.8,0.2))
 data_an <- cbind(train_index,data_an)
 table(data_an$train)
 
-train <- data_an |>
-  filter(train_index == 'TRUE')
-test <- data_an |>
-  filter(train_index == 'FALSE')
+train <- data_an |> filter(train_index == TRUE)
+test <- data_an |> filter(train_index == FALSE)
+train = train[, !colnames(train) %in% "train_index"]
+test = test[, !colnames(test) %in% "train_index"]
 
-train = train[,-train_index] # remove the train_index column
-test = test[,-train_index]
 
 dim(train)
 dim(test)
 
-# supervised models ----------------------------------------------------------------
+# select best model for linear reg --------------------------------------
 
-# Select best model
-regfit.full=regsubsets(sigi~.,data=train,nvmax=11) # all models
+
+regfit.full=regsubsets(sigi~.,data=train,nvmax=18) # all models
 reg.summary <- summary(regfit.full) 
 
 par(mfrow=c(2,2)) # set up plot layout
@@ -142,34 +149,112 @@ min_bic <- which.min(reg.summary$bic)
 plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
 points(min_bic,reg.summary$bic[min_bic],col="red",cex=2,pch=20)
 plot(regfit.full,scale="r2")
-plot(regfit.full,scale="adjr2")  # 8 vars
-plot(regfit.full,scale="Cp")     # 5 vars
+plot(regfit.full,scale="adjr2")  # 9 vars
+plot(regfit.full,scale="Cp")     # 6 vars
 plot(regfit.full,scale="bic")    # 4 vars
-coef(regfit.full,6) # best according to Cp
+coef(regfit.full,9) # best according to AdjR2
 
 test.mat=model.matrix(sigi~.,data=test)
-val.errors=rep(NA,6)
+val.errors=rep(NA,9)
 
-ols_robust = lm_robust(sigi ~ cpi+opec+fragility+gini+rel,
+# GPT best subset selection with cross validation -------------------------
+subsets <- regsubsets(sigi ~ ., data=train, nbest=1, nvmax=18, really.big=TRUE)
+
+cv_error <- function(data, folds, max_features) {
+  n <- nrow(data)
+  # Create indices for k-fold cross-validation
+  fold_indices <- sample(rep(1:folds, length.out=n))
+  
+  # Store errors for each model size
+  errors <- matrix(NA, nrow=max_features, ncol=folds)
+  
+  for (k in 1:max_features) {
+    for (j in 1:folds) {
+      # Split data into training and validation based on fold
+      train_data <- data[fold_indices != j, ]
+      test_data <- data[fold_indices == j, ]
+      
+      # Fit model on training data with k predictors
+      fit <- regsubsets(sigi ~ ., data=train_data, nvmax=k, really.big=TRUE)
+      model <- summary(fit)
+      
+      # Select the best model of size k
+      best_model <- which.max(model$adjr2)
+      
+      # Predict on validation set
+      test_matrix <- model.matrix(sigi ~ ., data=test_data)[, -1]
+      pred <- as.vector(test_matrix[, best_model, drop=FALSE] %*% coef(fit, id=best_model))
+      
+      # Calculate and store the error
+      errors[k, j] <- mean((test_data$sigi - pred)^2)
+    }
+  }
+  
+  # Average errors across folds for each model size
+  mean_errors <- apply(errors, 1, mean)
+  return(mean_errors)
+}
+
+# Apply the function
+cv_results <- cv_error(train, folds=5, max_features=10)
+
+# Choose best model
+best_size <- which.min(cv_results)
+print(paste("Best number of features:", best_size))
+
+# fit best model
+final_model <- regsubsets(sigi ~ ., data=train, nvmax=best_size)
+final_summary <- summary(final_model)
+
+print(final_summary)
+
+# best subset model -------------------------------------------------------
+
+
+
+
+
+ols_robust = lm_robust(sigi ~ cpi+opec+fragility+gini+relChristian+relMuslim,
                        data = train, se_type = "HC2")
 summary(ols_robust)
 
 ## Robust ols with rlm by MASS
 ols_robust_test_predictions = predict(ols_robust, newdata = test)
-mse(fitted(ols_robust), train, "Class") #training error
-mse(ols_robust_test_predictions, test, "Class") #test error
+rmse(fitted(ols_robust), train, "sigi") #training error
+rmse(ols_robust_test_predictions, test, "sigi") #test error
+train <- train[,-relChristianity]
+ols_basic = lm(sigi ~., data = train[,-relChristian])
+ols_basic_test_predictions = predict(ols_basic, newdata = test)
 
+# Cross Validation --------------------------------------------------------
 
+fitControl <- trainControl(method = "cv", number = 5)
+cv_model <- train(sigi ~ ., data = train, method = "lm", trControl = fitControl)
+print(cv_model)
 
-
-# mse function
-mse = function(predictions,data,y){
-  residuals = (predictions - (data[c(y)]))
-  mse = (1/nrow(data))*sum((residuals^2))
-  return(mse)
-}
+View(train)
 
 # Ridge regression
+
+# Remove rows with any NA values in the dataset
+train_clean <- na.omit(train)
+
+# Create the model matrix and response vector from the cleaned dataset
+X <- model.matrix(sigi ~ . - 1, data = train_clean)
+y <- train_clean$sigi
+
+ridge=glmnet(X,y,alpha=0)
+ridge$beta
+plot(ridge,xvar="lambda", label = TRUE)
+ridge_fitted = predict(ridge, newx = X) # fitted value for the training set using the best lambda value automatically selected by the function
+ridge_predicted = predict(ridge, newx = model.matrix(sigi~.-1, data = test)) # fitted value for the training set using the best lambda value automatically selected by the function
+cv.ridge=cv.glmnet(X,y,alpha=0)
+coef(cv.ridge)
+plot(cv.ridge) # cv mse of the ridge
+cv.ridge_predicted = predict(cv.ridge, newx = X)
+mse(ridge_fitted, train, "Class") # training error of the ridge
+mse(ridge_predicted, test, "Class") # test error of the ridge
+mse(cv.ridge_predicted, test, "Class") # cv test error of the ridge
 # Lasso regression
 
 # following code is from group project
