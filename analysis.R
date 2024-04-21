@@ -29,30 +29,12 @@ rmse = function(predictions, data, y) {
 
 # import data -------------------------------------------------------------
 
-data <-  read.csv("~/GitHub/sl_exam/statistical_learning/sigi_dataset.csv", sep=";")
-# fix(data) to manually fix the data
-data$sigid <- ifelse(data$sigi > 40, 1,0) # add sigi dummy for logistic / knn
-data$lgdp <- log(data$gdp)
-data$lpop <-  log(data$pop)
-
-# create dummies from religion, we keep info on Christianity and Islam (not many others)
-# create dummies from religion, then modify the code accordingly
-sum(is.na(data$rel))
-data$rel[is.na(data$rel)] <- "Missing"
-rel_dummies <- model.matrix(~ rel - 1, data = data, na.action = "na.pass")
-#Merge the dummy variables with the original dataset
-data <- cbind(data, rel_dummies)
-
-
-#data$relChristian = ifelse(data$rel == "Christianity", 1, 0)
-#data$relMuslim = ifelse(data$rel == "Muslim", 1, 0)
-#data$relOther = ifelse(!data$rel %in% c("Christianity", "Muslim"), 1, 0)
-
+data <-  read.csv("~/GitHub/sl_exam/statistical_learning/full_dataset.csv", sep=",")
 
 # data we'll use in the analysis
 data_an <-  data |> # subsets only variables necessary for analysis
   filter(!is.na(sigi))|>
-  select(-c(country, fos, sigid, gdp, pop, rel,)) 
+  select(-c(country, fos, sigid, gdp, pop, relOther, rel)) ## changed dem to fos
 
 
 # descriptives ------------------------------------------------------------
@@ -122,7 +104,7 @@ filtered_data |>
 
 # split train and test ----------------------------------------------------
 
-set.seed(1)
+set.seed(42)
 
 # create an index for the train/test division
 train_index =sample(c(TRUE,FALSE), nrow(data_an),rep=TRUE, prob = c(0.8,0.2))
@@ -134,12 +116,12 @@ test <- data_an |> filter(train_index == FALSE)
 train = train[, !colnames(train) %in% "train_index"]
 test = test[, !colnames(test) %in% "train_index"]
 
-
+train <-  na.omit(train)
 dim(train)
 dim(test)
 
 # select best model for linear reg --------------------------------------
-regfit.full=regsubsets(sigi~.,data=train[, !names(train) %in% c("code", "region","rel")]) 
+regfit.full=regsubsets(sigi~.,data=train[, !names(train) %in% c("code", "region")]) 
 reg.summary <- summary(regfit.full) 
 par(mfrow=c(2,2)) # set up plot layout
 plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",type="l")
@@ -164,53 +146,24 @@ val.errors=rep(NA,6)
 
 # best subset model -------------------------------------------------------
 
-ols_robust = lm_robust(sigi ~ cpi+opec+fragility+gini+lifeexp+relChristian,
+# why does this get Adjr2 .64 but the best subset does not find it??????
+
+ols_robust = lm_robust(sigi ~ #fill with the best in AdjR2, 
                        data = train, se_type = "HC2")
 summary(ols_robust)
 
-## Robust ols with rlm by MASS
-ols_robust_test_predictions = predict(ols_robust, newdata = test)
+ols_robust_test_predictions <- predict(ols_robust, newdata = test)
 rmse(fitted(ols_robust), train, "sigi") #training error
 rmse(ols_robust_test_predictions, test, "sigi") #test error
-train <- train[,-relChristianity]
-ols_basic = lm(sigi ~., data = train[,-relChristian])
-ols_basic_test_predictions = predict(ols_basic, newdata = test)
 
-# Cross Validation --------------------------------------------------------
-
-fitControl <- trainControl(method = "cv", number = 5)
-cv_model <- train(sigi ~ ., data = train, method = "lm", trControl = fitControl)
-print(cv_model)
-
-View(train)
 
 # Ridge regression
 
-# Remove rows with any NA values in the dataset
-train_clean <- na.omit(train)
-
-# Create the model matrix and response vector from the cleaned dataset
-X <- model.matrix(sigi ~ . - 1, data = train_clean)
-y <- train_clean$sigi
-
-ridge=glmnet(X,y,alpha=0)
-ridge$beta
-plot(ridge,xvar="lambda", label = TRUE)
-ridge_fitted = predict(ridge, newx = X) # fitted value for the training set using the best lambda value automatically selected by the function
-ridge_predicted = predict(ridge, newx = model.matrix(sigi~.-1, data = test)) # fitted value for the training set using the best lambda value automatically selected by the function
-cv.ridge=cv.glmnet(X,y,alpha=0)
-coef(cv.ridge)
-plot(cv.ridge) # cv mse of the ridge
-cv.ridge_predicted = predict(cv.ridge, newx = X)
-mse(ridge_fitted, train, "Class") # training error of the ridge
-mse(ridge_predicted, test, "Class") # test error of the ridge
-mse(cv.ridge_predicted, test, "Class") # cv test error of the ridge
-# Lasso regression
 
 # following code is from group project
 # 4. Ridge
 X = model.matrix(sigi~.-1, data = data_an[train,])
-y=train$Class
+y=train$sigi
 ridge=glmnet(X,y,alpha=0)
 ridge$beta
 plot(ridge,xvar="lambda", label = TRUE)
