@@ -36,16 +36,23 @@ data$lgdp <- log(data$gdp)
 data$lpop <-  log(data$pop)
 
 # create dummies from religion, we keep info on Christianity and Islam (not many others)
+# create dummies from religion, then modify the code accordingly
+sum(is.na(data$rel))
 data$rel[is.na(data$rel)] <- "Missing"
-data$relChristian = ifelse(data$rel == "Christianity", 1, 0)
-data$relMuslim = ifelse(data$rel == "Muslim", 1, 0)
-data$relOther = ifelse(!data$rel %in% c("Christianity", "Muslim"), 1, 0)
+rel_dummies <- model.matrix(~ rel - 1, data = data, na.action = "na.pass")
+#Merge the dummy variables with the original dataset
+data <- cbind(data, rel_dummies)
+
+
+#data$relChristian = ifelse(data$rel == "Christianity", 1, 0)
+#data$relMuslim = ifelse(data$rel == "Muslim", 1, 0)
+#data$relOther = ifelse(!data$rel %in% c("Christianity", "Muslim"), 1, 0)
 
 
 # data we'll use in the analysis
 data_an <-  data |> # subsets only variables necessary for analysis
   filter(!is.na(sigi))|>
-  select(-c(country, fos, sigid, gdp, pop, rel)) 
+  select(-c(country, fos, sigid, gdp, pop, rel,)) 
 
 
 # descriptives ------------------------------------------------------------
@@ -53,7 +60,7 @@ data_an <-  data |> # subsets only variables necessary for analysis
 # What is the relationship between sigi and democracy?
 data_an |>
   ggplot(aes(x = dem, y = sigi)) +
-  geom_point(color = 'region') +
+  geom_point(aes(color = region)) +
   geom_smooth() 
 
 #general summary
@@ -115,7 +122,7 @@ filtered_data |>
 
 # split train and test ----------------------------------------------------
 
-set.seed(42)
+set.seed(1)
 
 # create an index for the train/test division
 train_index =sample(c(TRUE,FALSE), nrow(data_an),rep=TRUE, prob = c(0.8,0.2))
@@ -132,11 +139,8 @@ dim(train)
 dim(test)
 
 # select best model for linear reg --------------------------------------
-
-
-regfit.full=regsubsets(sigi~.,data=train,nvmax=18) # all models
+regfit.full=regsubsets(sigi~.,data=train[, !names(train) %in% c("code", "region","rel")]) 
 reg.summary <- summary(regfit.full) 
-
 par(mfrow=c(2,2)) # set up plot layout
 plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",type="l")
 plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",type="l")
@@ -149,72 +153,18 @@ min_bic <- which.min(reg.summary$bic)
 plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
 points(min_bic,reg.summary$bic[min_bic],col="red",cex=2,pch=20)
 plot(regfit.full,scale="r2")
-plot(regfit.full,scale="adjr2")  # 9 vars
-plot(regfit.full,scale="Cp")     # 6 vars
-plot(regfit.full,scale="bic")    # 4 vars
-coef(regfit.full,9) # best according to AdjR2
+plot(regfit.full,scale="adjr2")  # 6 vars
+plot(regfit.full,scale="Cp")     # 4 vars
+plot(regfit.full,scale="bic")    # 2 vars
+coef(regfit.full,6) # best according to AdjR2
 
 test.mat=model.matrix(sigi~.,data=test)
-val.errors=rep(NA,9)
+val.errors=rep(NA,6)
 
-# GPT best subset selection with cross validation -------------------------
-subsets <- regsubsets(sigi ~ ., data=train, nbest=1, nvmax=18, really.big=TRUE)
-
-cv_error <- function(data, folds, max_features) {
-  n <- nrow(data)
-  # Create indices for k-fold cross-validation
-  fold_indices <- sample(rep(1:folds, length.out=n))
-  
-  # Store errors for each model size
-  errors <- matrix(NA, nrow=max_features, ncol=folds)
-  
-  for (k in 1:max_features) {
-    for (j in 1:folds) {
-      # Split data into training and validation based on fold
-      train_data <- data[fold_indices != j, ]
-      test_data <- data[fold_indices == j, ]
-      
-      # Fit model on training data with k predictors
-      fit <- regsubsets(sigi ~ ., data=train_data, nvmax=k, really.big=TRUE)
-      model <- summary(fit)
-      
-      # Select the best model of size k
-      best_model <- which.max(model$adjr2)
-      
-      # Predict on validation set
-      test_matrix <- model.matrix(sigi ~ ., data=test_data)[, -1]
-      pred <- as.vector(test_matrix[, best_model, drop=FALSE] %*% coef(fit, id=best_model))
-      
-      # Calculate and store the error
-      errors[k, j] <- mean((test_data$sigi - pred)^2)
-    }
-  }
-  
-  # Average errors across folds for each model size
-  mean_errors <- apply(errors, 1, mean)
-  return(mean_errors)
-}
-
-# Apply the function
-cv_results <- cv_error(train, folds=5, max_features=10)
-
-# Choose best model
-best_size <- which.min(cv_results)
-print(paste("Best number of features:", best_size))
-
-# fit best model
-final_model <- regsubsets(sigi ~ ., data=train, nvmax=best_size)
-final_summary <- summary(final_model)
-
-print(final_summary)
 
 # best subset model -------------------------------------------------------
 
-
-
-
-
-ols_robust = lm_robust(sigi ~ cpi+opec+fragility+gini+relChristian+relMuslim,
+ols_robust = lm_robust(sigi ~ cpi+opec+fragility+gini+lifeexp+relChristian,
                        data = train, se_type = "HC2")
 summary(ols_robust)
 
