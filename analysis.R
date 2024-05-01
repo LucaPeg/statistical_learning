@@ -38,12 +38,8 @@ data_an <-  data |> # subsets only variables necessary for analysis
   filter(!is.na(sigi))|>
   select(-c(country, fos, sigid, gdp, pop, relOther, rel)) ## changed dem to fos
 
-
 # descriptives ------------------------------------------------------------
 
-# Create var lgdp and lpop
-data$lgdp <- log(data$gdp)
-data$lpop <- log(data$pop)
 
 # What is the relationship between sigi and democracy?
 data_an |>
@@ -296,12 +292,75 @@ qqnorm(std_residuals_lm, main = "Q-Q Plot of Standardized Residuals (LM)")
 qqline(std_residuals_lm, col = "red")
 
 # unsupervised models -----------------------------------------------------
-# PCA, then K-means
+# PCA, then K-means 
+# PCA -> I use the dataset without train/test split #####
 
-data_pca <-  data_an |>
-  select(-c(code, region, X))
+# divide categorical and numerical data for scaling
+# Categorical attributes
+data_an <- na.omit(data_an)
+data_an <- data_an[data_an$code != 'SAU', ]
 
-acp<-princomp(na.omit(data_pca), cor=T)
-summary(princomp(data_an, cor=T))
+categorical_data <- data_an[, c("code", "region" )]
+dummies <- data_an[,c("relChristian","relMuslim","opec")]
+# Numeric attributes
+numeric_data <- data_an[, !(names(data_an) # we drop sigi as well
+                            %in% c("code","region","relChristian",
+                                   "relMuslim", "opec", "X", "sigi"))] 
 
-summary(data_pca)
+# normalize numeric data
+scaled_numeric_data <- scale(numeric_data)
+#merge all numerical variables
+scaled_numeric_data <- cbind(scaled_numeric_data, dummies)
+# merge the dataset back together
+final_data <- cbind(categorical_data, scaled_numeric_data)
+
+# Perform PCA
+pca_result <- prcomp(scaled_numeric_data)
+# Create a dataframe of the PCA scores
+pca_scores <- as.data.frame(pca_result$x)
+# Add back the categorical data for plotting
+plot_data <- cbind(pca_scores, categorical_data)
+
+# Plotting the first two principal components with ggplot2
+ggplot(plot_data, aes(x = PC1, y = PC2, color = region)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "PCA of Dataset", x = "Principal Component 1", y = "Principal Component 2") +
+  theme_minimal()
+
+# Scree plot
+plot(pca_result$sdev^2, type = 'b', main = "Scree Plot", xlab = "Principal Component", ylab = "Eigenvalues")
+# Biplot of the first two PCs
+biplot(pca_result)
+
+# K-MEANS ####
+# Using the first two principal components
+pc_data <- pca_result$x[, 1:2]
+
+# K-means clustering
+set.seed(123)  # for reproducibility
+kmeans_result <- kmeans(pc_data, centers = 2)  # two clusters
+
+# Plotting K-means results
+
+## merge pc_data with categorical in order to spot the outlier
+pc_data <- cbind(pc_data, categorical_data)
+
+# # plot PCA
+plot(pc_data[,1], pc_data[,2], col = kmeans_result$cluster, pch = 20, main = "K-means on Principal Components")
+points(kmeans_result$centers[, 1], kmeans_result$centers[, 2], col = 1:3, pch = 8, cex = 2)
+
+# Subsetting data where PC2 > 5
+pc_data_high_pc2 <- pc_data[pc_data[, 2] > 5, ]
+if (nrow(pc_data_high_pc2) > 0) {
+  text(pc_data_high_pc2[, 1], pc_data_high_pc2[, 2], 
+       labels = pc_data_high_pc2$code, pos = 1, cex = 0.8, col = 'black')
+}
+
+
+
+# Classification ----------------------------------------------------------
+
+# Change sigi into a dummy variable according to a threshold.
+# Use logistic regression and knn to classify datapoints
+# Makes less theoretical sense due to sigi's construction
+# But it is a clear exercise
