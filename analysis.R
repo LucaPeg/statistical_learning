@@ -14,6 +14,8 @@ library(tree)
 library(maxLik)
 library(Matrix)
 library(caret)
+library(car)
+library(ggrepel)
 
 
 
@@ -39,23 +41,32 @@ data_an <-  data |> # subsets only variables necessary for analysis
 
 # descriptives ------------------------------------------------------------
 
+# Create var lgdp and lpop
+data$lgdp <- log(data$gdp)
+data$lpop <- log(data$pop)
+
 # What is the relationship between sigi and democracy?
 data_an |>
   ggplot(aes(x = dem, y = sigi)) +
   geom_point(aes(color = region)) +
-  geom_smooth() 
+  geom_smooth(method = lm) 
 
 #general summary
 summary(data)
 
 # correlations between variables
+
 data |>
-  select(cpi, fragility, gdp, gini, lifeexp, oilexp, pop, sigi, urb) |>
+  select(cpi, dem, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) |>
   ggpairs()
+
+data |>
+  select(cpi, dem, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) |>
+  ggcorr()
 
 # Boxplots
 data %>%
-  select(cpi, fragility, gdp, gini, lifeexp, oilexp, pop, sigi, urb) %>%
+  select(cpi, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) %>%
   tidyr::pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
   ggplot(aes(x = Variable, y = Value)) +
   geom_boxplot() +
@@ -81,7 +92,7 @@ filtered_data |>
 # densities for all variables
 filtered_data %>%
   filter(!is.na(fos)) |>
-  pivot_longer(cols = c(cpi, fragility, gdp, gini, lifeexp, oilexp, pop, sigi, urb),
+  pivot_longer(cols = c(cpi, fragility, lgdp, gini, lifeexp, lpop, sigi, urb),
                names_to = "Variable", values_to = "Value") %>%
   ggplot(aes(x = Value, fill = fos)) +
   geom_density(alpha = 0.5) +
@@ -90,7 +101,7 @@ filtered_data %>%
 # how is the SIGI variable distributed?
 data |>
   ggplot(aes(x = sigi)) +
-  geom_density()
+  geom_histogram(bins = 50)
 
 data |> 
   ggplot(aes(y = sigi)) +
@@ -107,7 +118,7 @@ filtered_data |>
 set.seed(42)
 
 # create an index for the train/test division
-train_index =sample(c(TRUE,FALSE), nrow(data_an),rep=TRUE, prob = c(0.8,0.2))
+train_index = sample(c(TRUE,FALSE), nrow(data_an),rep=TRUE, prob = c(0.8,0.2))
 data_an <- cbind(train_index,data_an)
 table(data_an$train)
 
@@ -116,13 +127,17 @@ test <- data_an |> filter(train_index == FALSE)
 train = train[, !colnames(train) %in% "train_index"]
 test = test[, !colnames(test) %in% "train_index"]
 
-train <-  na.omit(train)
+train <-  na.omit(train) # there are few NAs that prevent predicting
+test <-  na.omit(test)   # get rid of NAs
+
 dim(train)
 dim(test)
+
 
 # select best model for linear reg --------------------------------------
 regfit.full=regsubsets(sigi~.,data=train[, !names(train) %in% c("code", "region")]) 
 reg.summary <- summary(regfit.full) 
+reg.summary
 par(mfrow=c(2,2)) # set up plot layout
 plot(reg.summary$rss,xlab="Number of Variables",ylab="RSS",type="l")
 plot(reg.summary$adjr2,xlab="Number of Variables",ylab="Adjusted RSq",type="l")
@@ -134,11 +149,17 @@ points(min_cp,reg.summary$cp[min_cp],col="red",cex=2,pch=20)
 min_bic <- which.min(reg.summary$bic)
 plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
 points(min_bic,reg.summary$bic[min_bic],col="red",cex=2,pch=20)
+
+coef(regfit.full, which.max(reg.summary$adjr2)) # best according to adjr2
+
+# plot variables selection
 plot(regfit.full,scale="r2")
 plot(regfit.full,scale="adjr2")  # 6 vars
 plot(regfit.full,scale="Cp")     # 4 vars
 plot(regfit.full,scale="bic")    # 2 vars
-coef(regfit.full,6) # best according to AdjR2
+coef(regfit.full,6) # best according to AdjR2 
+
+#issue : reg.summary contains relMuslim, but the plots don't show it.
 
 test.mat=model.matrix(sigi~.,data=test)
 val.errors=rep(NA,6)
@@ -148,65 +169,139 @@ val.errors=rep(NA,6)
 
 # why does this get Adjr2 .64 but the best subset does not find it??????
 
-ols_robust = lm_robust(sigi ~ #fill with the best in AdjR2, 
-                       data = train, se_type = "HC2")
-summary(ols_robust)
+# Best model according to BIC
+ols_minimal = lm(sigi~fragility+relMuslim, data = train) # lm_robust is the same
+summary(ols_minimal)
+# Compute the VIF of the model
+vif_minimal= vif(lm(sigi~fragility + relMuslim, data = train))
+vif_minimal
 
-ols_robust_test_predictions <- predict(ols_robust, newdata = test)
-rmse(fitted(ols_robust), train, "sigi") #training error
-rmse(ols_robust_test_predictions, test, "sigi") #test error
+# Best model according to AdjR2
+best.adjr2 <-  lm(sigi ~ cpi+opec+gini+urb+relMuslim+fragility,data = train)
+summary(best.adjr2)
 
+# The VIF is pretty high for many variables (cpi & fragility)
+vif_best.adjr2 <- vif(lm(sigi ~ cpi+ opec +fragility + gini + urb + relMuslim, 
+                                data = train))
+vif_best.adjr2
 
-# Ridge regression
+# Prediction results with "big" model
+pred.best.adjr2 <- predict(best.adjr2, newdata = test)
+rmse(fitted(best.adjr2), train, "sigi") #training error
+rmse(pred.best.adjr2, test, "sigi") #test error
 
-
-# following code is from group project
-# 4. Ridge
-X = model.matrix(sigi~.-1, data = data_an[train,])
-y=train$sigi
-ridge=glmnet(X,y,alpha=0)
-ridge$beta
-plot(ridge,xvar="lambda", label = TRUE)
-ridge_fitted = predict(ridge, newx = X) # fitted value for the training set using the best lambda value automatically selected by the function
-ridge_predicted = predict(ridge, newx = model.matrix(Class~.-1, data = test)) # fitted value for the training set using the best lambda value automatically selected by the function
-cv.ridge=cv.glmnet(X,y,alpha=0)
-coef(cv.ridge)
-plot(cv.ridge) # cv mse of the ridge
-cv.ridge_predicted = predict(cv.ridge, newx = X)
-mse(ridge_fitted, train, "Class") # training error of the ridge
-mse(ridge_predicted, test, "Class") # test error of the ridge
-mse(cv.ridge_predicted, test, "Class") # cv test error of the ridge
-
-# 5. Lasso
-fit.lasso=glmnet(x,y)
-plot(fit.lasso,xvar="lambda",label=TRUE)
-cv.lasso=cv.glmnet(x,y)
-plot(cv.lasso)
-coef(cv.lasso)
-mse(fit.lasso, raisins, "Class")
-predict(fit.lasso,newx = x)
+# Prediction results with "minimal" model
+pred.minimal <- predict(ols_minimal, newdata = test) 
+rmse(fitted(ols_minimal), train, "sigi") # training error is slightly greater
+rmse(pred.minimal, test,"sigi") # test error is same as big model
 
 
+# Ridge -------------------------------------------------------------------
 
 
-# multivariate regression
-mod1 =lm(sigi~
-          cpi+dem+opec+fragility+gdp+gini+lifeexp+oilexp+pop+rel+urb,data=data)
-summary(mod1)
-par(mfrow=c(2,2))
-plot(mod1)
+# Create model matrices for the training and testing datasets
 
-# robust regression
-mod1r <- lm_robust(sigi~
-            cpi+dem+opec+fragility+gdp+gini+lifeexp+oilexp+pop+rel+urb,data=data,
-            se_type = "stata")
-summary(mod1r)
+x <- model.matrix(sigi ~ cpi + dem + opec + fragility + gini + lifeexp + oilexp +
+                    urb + lgdp + lpop + relChristian + relMuslim,
+                  data = train) # -1 excludes intercept term
 
+x.test <- model.matrix(sigi ~ cpi + dem + opec + fragility + gini + lifeexp + oilexp +
+                         urb + lgdp + lpop + relChristian + relMuslim,
+                       data = test)
+
+y <- train$sigi
+y.test <- test$sigi
+
+# Initialize a grid for lambda
+grid = 10^seq(10, -2, length = 100)
+
+# Fit Ridge regression model
+ridge.mod = glmnet(x, y, alpha = 0, lambda = grid, thresh = 1e-12)
+
+# CV to find optimal lambda
+cv.out = cv.glmnet(x, y, alpha = 0)
+bestlam = cv.out$lambda.min
+
+# Predict using the best lambda obtained from cross-validation
+ridge.pred = predict(ridge.mod, s = bestlam, newx = x.test)
+
+# RMSE Ridge
+rmse.ridge = rmse(ridge.pred, test, "sigi")
+print(rmse.ridge) # test error
+
+# Coefficients at with best lambda
+print(coef(ridge.mod, s = bestlam))
+
+
+
+# Lasso -------------------------------------------------------------------
+
+# Fit Lasso regression model
+lasso.mod = glmnet(x, y, alpha = 1, lambda = grid)
+
+# CV to find optimal lambda for Lasso
+cv.out = cv.glmnet(x, y, alpha = 1)
+bestlam = cv.out$lambda.min
+
+# Predict using the best lambda obtained from cross-validation for Lasso
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x.test)
+
+# RMSE Lasso
+rmse_lasso = rmse(lasso.pred, test, "sigi")
+print(rmse_lasso) # test error
+
+# Print coefficients at best lambda for Lasso
+print(coef(lasso.mod, s = bestlam))
 
 
 # diagnostics -------------------------------------------------------------
+par(mfrow=c(1,1))
 
-# cook's distance, leverage, forward search
+###### SCATTER OF COOK'S AND LEVERAGE 
+
+# Calculate leverage and Cook's distance
+leverage <- hatvalues(ols_minimal)
+cooks_d <- cooks.distance(ols_minimal)
+
+# Define thresholds
+cooks_threshold <- 4 / (length(cooks_d) - 2)  # Common threshold for Cook's distance
+leverage_threshold <- 2 * mean(leverage)      # Common threshold for leverage
+
+# Identify observations above either threshold
+high_influence <- (cooks_d > cooks_threshold) | (leverage > leverage_threshold)
+
+
+# Final plot
+ggplot(train, aes(x = leverage, y = cooks_d)) +
+  geom_point(color = ifelse(high_influence, "red", "black")) +  # Points
+  geom_text_repel(aes(label = ifelse(high_influence, code, "")),  # Only label high influence points
+                  box.padding = 0.35, point.padding = 0.5,
+                  segment.color = 'grey50') +  # Adds lines to text for clarity
+  geom_hline(yintercept = cooks_threshold, color = "red", linetype = "dashed") +
+  geom_vline(xintercept = leverage_threshold, color = "blue", linetype = "dashed") +
+  labs(x = "Leverage (Hat values)", y = "Cook's Distance", title = "Cook's Distance vs. Leverage with Labels") +
+  theme_minimal()
+
+# Standardized residuals and QQ plot
+std_residuals_lm <- rstandard(ols_minimal)
+plot(train$sigi, std_residuals_lm, xlab = "SIGI", ylab = "Standardized Residuals",
+     main = "Standardized Residuals vs. SIGI (LM)")
+abline(h = 0, col = "grey")
+lines(lowess(train$sigi, std_residuals_lm), col = "blue")
+abline(h = 3, col = "red", )
+abline(h = -3, col = 'red')
+
+# QQ plot
+qqnorm(std_residuals_lm, main = "Q-Q Plot of Standardized Residuals (LM)")
+qqline(std_residuals_lm, col = "red")
+
 # unsupervised models -----------------------------------------------------
+# PCA, then K-means
 
-# PCA, then KMeans
+data_pca <-  data_an |>
+  select(-c(code, region, X))
+
+acp<-princomp(na.omit(data_pca), cor=T)
+summary(princomp(data_an, cor=T))
+
+summary(data_pca)
