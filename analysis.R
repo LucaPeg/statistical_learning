@@ -1,4 +1,3 @@
-
 # libraries ---------------------------------------------------------------
 
 library(tidyverse)
@@ -34,16 +33,16 @@ rmse = function(predictions, data, y) {
 file <- here("data","full_dataset.csv")
 data <-  read.csv(file, sep=",")
 
-# data we'll use in the analysis
-data_an <-  data |> # subsets only variables necessary for analysis
+# data_an <- data we'll use in most of the analysis
+data_an <-  data |> 
   filter(!is.na(sigi))|> # we omit the rows without sigi value
-  select(-c(country, fos, sigid, gdp, pop, relOther, rel)) ## changed dem to fos
+  select(-c(country, fos, sigid, gdp, pop, relOther, rel))
 
 # descriptives ------------------------------------------------------------
 
 
 # What is the relationship between sigi and democracy?
-data_an |>
+data_an |> # Apparently democracies are on average less discriminatory
   ggplot(aes(x = dem, y = sigi)) +
   geom_point(aes(color = region)) +
   geom_smooth(method = lm) 
@@ -71,12 +70,12 @@ data %>%
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
   facet_wrap(~Variable, scales = "free", nrow = 3)
 
-# check NAs -> when we focus on SIGI, few NA on other stuff
+# check NAs -> when we focus on SIGI we have few NA in other attributes
 filtered_data <- data %>%
   filter(!is.na(sigi))
 
-na_counts <- filtered_data %>%
-  summarise(across(everything(), ~ sum(is.na(.))))
+na_counts <- filtered_data %>% # get number of NAs for each attribute
+  summarise(across(everything(), ~ sum(is.na(.)))) 
 
 print(na_counts)
 
@@ -86,14 +85,27 @@ filtered_data |>
   ggplot(aes(x = cpi, fill = fos)) +
   geom_density(alpha = 0.5)
 
-# densities for all variables
+# densities for all variables, grouped by fos
 filtered_data %>%
-  filter(!is.na(fos)) |>
+  filter(!is.na(fos)) %>%
   pivot_longer(cols = c(cpi, fragility, lgdp, gini, lifeexp, lpop, sigi, urb),
                names_to = "Variable", values_to = "Value") %>%
   ggplot(aes(x = Value, fill = fos)) +
   geom_density(alpha = 0.5) +
-  facet_wrap(~Variable, scales = "free")
+  facet_wrap(~Variable, scales = "free", nrow = 3, ncol = 3) +
+  guides(fill = guide_legend(title = "Groups", label.position = "right")) +
+  theme(
+    legend.position = c(0.85, 0.1),
+    legend.direction = "vertical",
+    legend.justification = "right",
+    legend.box.just = "right",
+    legend.title.align = 0.5,
+    plot.margin = unit(c(1, 1, 1, 1), "lines"),
+    legend.text = element_text(size = 12),  
+    legend.title = element_text(size = 14),  
+    legend.key.size = unit(1.5, "lines")
+  )
+
 
 # how is the SIGI variable distributed?
 data |>
@@ -104,10 +116,10 @@ data |>
   ggplot(aes(y = sigi)) +
   geom_boxplot() # median is around 26; IQR between 17 and 41
 
-# Find appropriate threshold for unsupervised methods:
+# Find appropriate threshold for classification problem:
 filtered_data |>
-  filter(sigi > 35) |> # maybe 35 could make sense? I should find an underlyin
-  nrow()               # theory to justify a number: check OECD website
+  filter(sigi > 35) |> # maybe 35 could make sense? 
+  nrow()               
 
 
 # split train and test ----------------------------------------------------
@@ -119,6 +131,7 @@ train_index = sample(c(TRUE,FALSE), nrow(data_an),rep=TRUE, prob = c(0.8,0.2))
 data_an <- cbind(train_index,data_an)
 table(data_an$train)
 
+# create train and test data
 train <- data_an |> filter(train_index == TRUE)
 test <- data_an |> filter(train_index == FALSE)
 train = train[, !colnames(train) %in% "train_index"]
@@ -148,7 +161,7 @@ plot(reg.summary$bic,xlab="Number of Variables",ylab="BIC",type='l')
 points(min_bic,reg.summary$bic[min_bic],col="red",cex=2,pch=20)
 
 coef(regfit.full, which.max(reg.summary$adjr2)) # best according to adjr2
-
+coef(regfit.full, which.max(reg.summary$bic)) # best bic, actually is relMuslim
 # plot variables selection
 plot(regfit.full,scale="r2")
 plot(regfit.full,scale="adjr2")  # 6 vars
@@ -164,18 +177,16 @@ val.errors=rep(NA,6)
 
 # best subset model -------------------------------------------------------
 
-# why does this get Adjr2 .64 but the best subset does not find it??????
-
 # Best model according to BIC
 ols_minimal = lm(sigi~fragility+relMuslim, data = train) # lm_robust is the same
 summary(ols_minimal)
 # Compute the VIF of the model
 vif_minimal= vif(lm(sigi~fragility + relMuslim, data = train))
-vif_minimal
+vif_minimal #very low, unlike with best adjr2 model
 
 # Best model according to AdjR2
 best.adjr2 <-  lm(sigi ~ cpi+opec+gini+urb+relMuslim+fragility,data = train)
-summary(best.adjr2)
+summary(best.adjr2) # just 0.02 improvement on Adjr2 with 4 additional vars
 
 # The VIF is pretty high for many variables (cpi & fragility)
 vif_best.adjr2 <- vif(lm(sigi ~ cpi+ opec +fragility + gini + urb + relMuslim, 
@@ -196,11 +207,11 @@ rmse(pred.minimal, test,"sigi") # test error is same as big model
 # Ridge -------------------------------------------------------------------
 
 
-# Create model matrices for the training and testing datasets
+# Create model matrices for the training and testing data
 
 x <- model.matrix(sigi ~ cpi + dem + opec + fragility + gini + lifeexp + oilexp +
                     urb + lgdp + lpop + relChristian + relMuslim,
-                  data = train) # -1 excludes intercept term
+                  data = train)
 
 x.test <- model.matrix(sigi ~ cpi + dem + opec + fragility + gini + lifeexp + oilexp +
                          urb + lgdp + lpop + relChristian + relMuslim,
@@ -220,11 +231,13 @@ cv.out = cv.glmnet(x, y, alpha = 0)
 bestlam = cv.out$lambda.min
 
 # Predict using the best lambda obtained from cross-validation
+ridge.train = predict(ridge.mod, s = bestlam, newx = x)
 ridge.pred = predict(ridge.mod, s = bestlam, newx = x.test)
 
 # RMSE Ridge
+rmse(ridge.train, train, 'sigi')
 rmse.ridge = rmse(ridge.pred, test, "sigi")
-print(rmse.ridge) # test error
+print(rmse.ridge) # test error is slightly better than the minimal model
 
 # Coefficients at with best lambda
 print(coef(ridge.mod, s = bestlam))
@@ -241,9 +254,11 @@ cv.out = cv.glmnet(x, y, alpha = 1)
 bestlam = cv.out$lambda.min
 
 # Predict using the best lambda obtained from cross-validation for Lasso
+lasso.train = predict(lasso.mod, s = bestlam, newx = x)
 lasso.pred = predict(lasso.mod, s = bestlam, newx = x.test)
 
 # RMSE Lasso
+rmse(lasso.train, train,'sigi') # training error
 rmse_lasso = rmse(lasso.pred, test, "sigi")
 print(rmse_lasso) # test error
 
@@ -256,6 +271,7 @@ par(mfrow=c(1,1))
 
 ###### SCATTER OF COOK'S AND LEVERAGE 
 
+# We focus on the minimal model (the one that minimized BIC)
 # Calculate leverage and Cook's distance
 leverage <- hatvalues(ols_minimal)
 cooks_d <- cooks.distance(ols_minimal)
@@ -299,7 +315,7 @@ qqline(std_residuals_lm, col = "red")
 # divide categorical and numerical data for scaling
 # Categorical attributes
 data_an <- na.omit(data_an)
-data_an <- data_an[data_an$code != 'SAU', ]
+data_an <- data_an[data_an$code != 'SAU', ] # SAU was outlier in PCA
 
 categorical_data <- data_an[, c("code", "region" )]
 dummies <- data_an[,c("relChristian","relMuslim","opec")]
