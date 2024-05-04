@@ -1,3 +1,4 @@
+
 # libraries ---------------------------------------------------------------
 
 library(tidyverse)
@@ -16,7 +17,7 @@ library(Matrix)
 library(caret)
 library(car)
 library(ggrepel)
-
+library(here)
 
 
 # functions ---------------------------------------------------------------
@@ -30,12 +31,12 @@ rmse = function(predictions, data, y) {
 }
 
 # import data -------------------------------------------------------------
-
-data <-  read.csv("~/GitHub/sl_exam/statistical_learning/full_dataset.csv", sep=",")
+file <- here("data","full_dataset.csv")
+data <-  read.csv(file, sep=",")
 
 # data we'll use in the analysis
 data_an <-  data |> # subsets only variables necessary for analysis
-  filter(!is.na(sigi))|>
+  filter(!is.na(sigi))|> # we omit the rows without sigi value
   select(-c(country, fos, sigid, gdp, pop, relOther, rel)) ## changed dem to fos
 
 # descriptives ------------------------------------------------------------
