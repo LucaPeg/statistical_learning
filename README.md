@@ -1,6 +1,6 @@
 ## Welcome!
 This is the project's repository for the "Statistical Learning" course of DSE@unimi.
-The project focuses on understanding whether, given some socio-economic variables, we can assess the level of gender discrimination at the country level.
+The project focuses on understanding whether, given some socio-economic variables, we can predict the level of gender discrimination at the country level.
 
 ## Data
 To measure the degree of gender discrimination we use the SIGI (Social Institutions & Gender Index) developed by the OECD.
