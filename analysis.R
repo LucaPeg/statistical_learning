@@ -17,6 +17,8 @@ library(caret)
 library(car)
 library(ggrepel)
 library(here)
+library(ggpubr)
+library(patchwork)
 
 
 # functions ---------------------------------------------------------------
@@ -40,10 +42,43 @@ data_an <-  data |>
 
 # descriptives ------------------------------------------------------------
 
+# Distrigbution of SIGI: should we use log(sigi)?
+data$lsigi <- log(data$sigi)
+
+# how is the SIGI variable distributed? 
+data |> 
+  ggplot(aes(y = sigi)) +
+  geom_boxplot() # median is around 26; IQR between 17 and 41
+
+# Normality test for sigi and lsigi
+shapiro.test(data$sigi) # not normal
+shapiro.test(data$lsigi) # still not normal
+
+# Visualization of density with normal distribution overlay
+ggdensity(data, x = "sigi", fill = "lightgray", 
+          title = "Distribution of SIGI with overlay of normal distirbution") +
+  stat_overlay_normal_density(color = "red", linetype = "dashed") # skewed data
+
+ggdensity(data, x = "lsigi", fill = "lightgray",
+          title = "ln(sigi) and normal distribution") + # less skewed but still not normal
+  stat_overlay_normal_density(color = "red", linetype = "dashed") 
+
+# qqplot sigi
+qqnorm(data$sigi, main = "Q-Q Plot of SIGI")
+qqline(data$sigi, col = "red")
+
+# qqplot lsigi
+qqnorm(data$lsigi, main = "Q-Q Plot of ln(SIGI)") # this looks better
+qqline(data$lsigi, col = "red")
 
 # What is the relationship between sigi and democracy?
-data_an |> # Apparently democracies are on average less discriminatory
+data |> # Apparently democracies are on average less discriminatory
   ggplot(aes(x = dem, y = sigi)) +
+  geom_point(aes(color = region)) +
+  geom_smooth(method = lm) 
+
+data |> # Apparently democracies are on average less discriminatory
+  ggplot(aes(x = dem, y = lsigi)) +
   geom_point(aes(color = region)) +
   geom_smooth(method = lm) 
 
@@ -107,20 +142,9 @@ filtered_data %>%
   )
 
 
-# how is the SIGI variable distributed?
-data |>
-  ggplot(aes(x = sigi)) +
-  geom_histogram(bins = 50)
 
-data |> 
-  ggplot(aes(y = sigi)) +
-  geom_boxplot() # median is around 26; IQR between 17 and 41
-
-# Find appropriate threshold for classification problem:
-filtered_data |>
-  filter(sigi > 35) |> # maybe 35 could make sense? 
-  nrow()               
-
+# What if we use lsigi? ---------------------------------------------------
+data_an$sigi <-  log(data_an$sigi)
 
 # split train and test ----------------------------------------------------
 
@@ -144,6 +168,9 @@ dim(train)
 dim(test)
 
 
+
+
+
 # select best model for linear reg --------------------------------------
 regfit.full=regsubsets(sigi~.,data=train[, !names(train) %in% c("code", "region")]) 
 reg.summary <- summary(regfit.full) 
@@ -164,13 +191,12 @@ coef(regfit.full, which.max(reg.summary$adjr2)) # best according to adjr2
 coef(regfit.full, which.max(reg.summary$bic)) # best bic, actually is relMuslim
 # plot variables selection
 plot(regfit.full,scale="r2")
-plot(regfit.full,scale="adjr2")  # 6 vars
+plot(regfit.full,scale="adjr2")  # 6 vars sigi # 5 vars lsigi (-urb)
 plot(regfit.full,scale="Cp")     # 4 vars
-plot(regfit.full,scale="bic")    # 2 vars
+plot(regfit.full,scale="bic")    # 2 vars sigi # 3 vars lsigi (+gini)
 coef(regfit.full,6) # best according to AdjR2 
 
 #issue : reg.summary contains relMuslim, but the plots don't show it.
-
 test.mat=model.matrix(sigi~.,data=test)
 val.errors=rep(NA,6)
 
@@ -179,7 +205,7 @@ val.errors=rep(NA,6)
 
 # Best model according to BIC
 ols_minimal = lm(sigi~fragility+relMuslim, data = train) # lm_robust is the same
-summary(ols_minimal)
+summary(ols_minimal)# if lsigi BIC takes "gini" as well
 # Compute the VIF of the model
 vif_minimal= vif(lm(sigi~fragility + relMuslim, data = train))
 vif_minimal #very low, unlike with best adjr2 model
@@ -189,7 +215,7 @@ best.adjr2 <-  lm(sigi ~ cpi+opec+gini+urb+relMuslim+fragility,data = train)
 summary(best.adjr2) # just 0.02 improvement on Adjr2 with 4 additional vars
 
 # The VIF is pretty high for many variables (cpi & fragility)
-vif_best.adjr2 <- vif(lm(sigi ~ cpi+ opec +fragility + gini + urb + relMuslim, 
+vif_best.adjr2 <- vif(lm(sigi ~ cpi+ opec +fragility + gini + relMuslim + urb, # - urb if lsigi
                                 data = train))
 vif_best.adjr2
 
@@ -203,7 +229,7 @@ pred.minimal <- predict(ols_minimal, newdata = test)
 rmse(fitted(ols_minimal), train, "sigi") # training error is slightly greater
 rmse(pred.minimal, test,"sigi") # test error is same as big model
 
-
+pred.minimal
 # Ridge -------------------------------------------------------------------
 
 
@@ -308,6 +334,9 @@ abline(h = -3, col = 'red')
 qqnorm(std_residuals_lm, main = "Q-Q Plot of Standardized Residuals (LM)")
 qqline(std_residuals_lm, col = "red")
 
+# are residuals normal?
+shapiro.test(std_residuals_lm) # yes they are
+
 # unsupervised models -----------------------------------------------------
 # PCA, then K-means 
 # PCA -> I use the dataset without train/test split #####
@@ -375,9 +404,4 @@ if (nrow(pc_data_high_pc2) > 0) {
 
 
 
-# Classification ----------------------------------------------------------
-
-# Change sigi into a dummy variable according to a threshold.
-# Use logistic regression and knn to classify datapoints
-# Makes less theoretical sense due to sigi's construction
-# But it is a clear exercise
+# Hierarchical Clustering
