@@ -15,11 +15,16 @@ library(maxLik)
 library(Matrix)
 library(caret)
 library(car)
-library(ggrepel)
+library(ggrepel) # avoid overlapping on plots
 library(here)
-library(ggpubr)
-library(patchwork)
-
+library(ggpubr) # plots
+library(patchwork) # plots
+library(MASS) 
+library(lmtest) # homoskedasticity
+library(rpart) # trees
+library(randomForest)
+library(lattice)
+library(cluster)
 
 # functions ---------------------------------------------------------------
 
@@ -38,7 +43,7 @@ data <-  read.csv(file, sep=",")
 # data_an <- data we'll use in most of the analysis
 data_an <-  data |> 
   filter(!is.na(sigi))|> # we omit the rows without sigi value
-  select(-c(country, fos, sigid, gdp, pop, relOther, rel))
+  dplyr::select(-c(country, fos, sigid, gdp, pop, relOther, rel)) # MASS masks it
 
 # descriptives ------------------------------------------------------------
 
@@ -88,16 +93,16 @@ summary(data)
 # correlations between variables
 
 data |>
-  select(cpi, dem, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) |>
+  dplyr::select(cpi, dem, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) |>
   ggpairs()
 
 data |>
-  select(cpi, dem, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) |>
+  dplyr::select(cpi, dem, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) |>
   ggcorr()
 
 # Boxplots
 data %>%
-  select(cpi, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) %>%
+  dplyr::select(cpi, fragility, lgdp, gini, lifeexp, oilexp, lpop, sigi, urb) %>%
   tidyr::pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
   ggplot(aes(x = Variable, y = Value)) +
   geom_boxplot() +
@@ -144,7 +149,8 @@ filtered_data %>%
 
 
 # What if we use lsigi? ---------------------------------------------------
-data_an$sigi <-  log(data_an$sigi)
+# data_an$sigi <-  log(data_an$sigi) # First do analysis without, then try 
+# all the analysis with lsigi
 
 # split train and test ----------------------------------------------------
 
@@ -206,6 +212,9 @@ val.errors=rep(NA,6)
 # Best model according to BIC
 ols_minimal = lm(sigi~fragility+relMuslim, data = train) # lm_robust is the same
 summary(ols_minimal)# if lsigi BIC takes "gini" as well
+summary(rr.minimal <- rlm(sigi ~ fragility + relMuslim, data = train)) # robust
+
+
 # Compute the VIF of the model
 vif_minimal= vif(lm(sigi~fragility + relMuslim, data = train))
 vif_minimal #very low, unlike with best adjr2 model
@@ -229,7 +238,140 @@ pred.minimal <- predict(ols_minimal, newdata = test)
 rmse(fitted(ols_minimal), train, "sigi") # training error is slightly greater
 rmse(pred.minimal, test,"sigi") # test error is same as big model
 
-pred.minimal
+
+# OLS diagnostics ----------------------------------------------------
+
+# Fitted against residuals
+opar <- par(mfrow = c(2,2), oma = c(0, 0, 1.1, 0))
+plot(ols_minimal, las = 1)
+
+###### SCATTER OF COOK'S AND LEVERAGE 
+
+# We focus on the minimal model (the one that minimized BIC)
+# Calculate leverage and Cook's distance
+leverage <- hatvalues(ols_minimal)
+cooks_d <- cooks.distance(ols_minimal)
+
+# Define thresholds
+cooks_threshold <- 4 / (length(cooks_d) - 2)  # Common threshold for Cook's distance
+leverage_threshold <- 2 * mean(leverage)      # Common threshold for leverage
+
+# Identify observations above either threshold
+high_influence <- (cooks_d > cooks_threshold) | (leverage > leverage_threshold)
+
+# reset layout
+par(mfrow=c(1,1))
+
+# Final plot
+ggplot(train, aes(x = leverage, y = cooks_d)) +
+  geom_point(color = ifelse(high_influence, "red", "black")) +  # Points
+  geom_text_repel(aes(label = ifelse(high_influence, code, "")),  # Only label high influence points
+                  box.padding = 0.35, point.padding = 0.5,
+                  segment.color = 'grey50') +  # Adds lines to text for clarity
+  geom_hline(yintercept = cooks_threshold, color = "red", linetype = "dashed") +
+  geom_vline(xintercept = leverage_threshold, color = "blue", linetype = "dashed") +
+  labs(x = "Leverage (Hat values)", y = "Cook's Distance", title = "Cook's Distance vs. Leverage with Labels") +
+  theme_minimal() # QAT is outlier, MYS, BFA, CMR and SGP have high cd
+
+
+# Standardized residuals and QQ plot
+std_residuals_lm <- rstandard(ols_minimal)
+plot(train$sigi, std_residuals_lm, xlab = "SIGI", ylab = "Standardized Residuals",
+     main = "Standardized Residuals vs. SIGI (LM)")
+abline(h = 0, col = "grey")
+lines(lowess(train$sigi, std_residuals_lm), col = "blue")
+abline(h = 3, col = "red", )
+abline(h = -3, col = 'red')
+
+# QQ plot
+qqnorm(std_residuals_lm, main = "Q-Q Plot of Standardized Residuals (LM)")
+qqline(std_residuals_lm, col = "red")
+
+# are residuals normal?
+shapiro.test(std_residuals_lm) # yes they are
+
+# are residuals homoskedastic?
+
+# For the minimal model
+bptest(ols_minimal) # we reject H0 -> heteroskedasticity -> we should use robust reg
+
+# For the best adjusted R^2 model
+bptest(best.adjr2) # we cannot reject H0 -> homoskedasticity
+
+
+# OLS without outliers ----------------------------------------------------
+
+# List of outlier country codes
+outlier_codes <- c("QAT","BFA", "CMR", "SGP", "MYS" )
+
+# Create a new dataset excluding these outliers
+data_noout <- train[!train$code %in% outlier_codes, ]
+
+ols_minimal_out = lm(sigi~fragility+relMuslim, data = data_noout)
+ols_full_out =lm(sigi ~ cpi+opec+gini+urb+relMuslim+fragility,data = data_noout)
+summary(ols_minimal_out)
+summary(ols_full_out)
+
+# Prediction results with "big" model
+pred.ols_full_out <- predict(ols_full_out, newdata = test)
+rmse(fitted(ols_full_out), data_noout, "sigi") #training error
+rmse(pred.ols_full_out, test, "sigi") #test error
+
+# Prediction results with "minimal" model
+
+pred.minimal_noout <- predict(ols_minimal_out, newdata = test) 
+rmse(fitted(ols_minimal_out), data_noout, "sigi") # training error is slightly greater
+rmse(pred.minimal_noout, test,"sigi")
+
+# While train error reduces, test error does not
+
+# Robust minimal OLS ------------------------------------------------------
+
+rr.minimal <- rlm(sigi ~ fragility + relMuslim, data = train) # robust
+pred.rr.minimal <- predict(rr.minimal, newdata = test) 
+rmse(fitted(rr.minimal), train, "sigi") # training error is slightly greater
+rmse(pred.rr.minimal, test,"sigi") # 12 instead of 11, doesn't change much
+
+
+# OLS Test diagnostics --------------------------------------------------------
+# Predictions for minimal model
+pred.minimal <- predict(ols_minimal, newdata = test)
+
+# Residuals for minimal model
+residuals_minimal <- test$sigi - pred.minimal
+
+# Predictions for best adjusted R^2 model
+pred.best.adjr2 <- predict(best.adjr2, newdata = test)
+
+# Residuals for best adjusted R^2 model
+residuals_best.adjr2 <- test$sigi - pred.best.adjr2
+
+
+# Plot residuals vs. predicted (minimal model)
+par(mfrow=c(1,1))
+
+plot(pred.minimal, residuals_minimal, main="Residuals vs. Predicted (Minimal Model)",
+     xlab="Predicted", ylab="Residuals")
+abline(h=0, col="red")
+
+# Plot residuals vs. predicted (best adjR2 model)
+plot(pred.best.adjr2, residuals_best.adjr2, main="Residuals vs. Predicted (Best AdjR2 Model)",
+     xlab="Predicted", ylab="Residuals")
+abline(h=0, col="red")
+
+# Test for homoskedasticity
+ncvTest(lm(residuals_minimal ~ pred.minimal))
+ncvTest(lm(residuals_best.adjr2 ~ pred.best.adjr2))
+
+# QQ plot for minimal model residuals
+qqnorm(residuals_minimal, main="QQ Plot of Residuals (Minimal Model)")
+qqline(residuals_minimal, col="red")
+
+# QQ plot for best adjR2 model residuals
+qqnorm(residuals_best.adjr2, main="QQ Plot of Residuals (Best AdjR2 Model)")
+qqline(residuals_best.adjr2, col="red")
+
+
 # Ridge -------------------------------------------------------------------
 
 
@@ -270,6 +412,10 @@ print(coef(ridge.mod, s = bestlam))
 
 
 
+
+
+
+
 # Lasso -------------------------------------------------------------------
 
 # Fit Lasso regression model
@@ -292,52 +438,115 @@ print(rmse_lasso) # test error
 print(coef(lasso.mod, s = bestlam))
 
 
-# diagnostics -------------------------------------------------------------
-par(mfrow=c(1,1))
 
-###### SCATTER OF COOK'S AND LEVERAGE 
+# Trees -------------------------------------------------------------------
+tree_model <- rpart(sigi ~ ., data = train[, !names(train) %in% c("code", "region")], 
+                    method = "anova")
+# Plot the tree
+plot(tree_model, uniform = TRUE, main = "Decision Tree for SIGI")
+text(tree_model, use.n = TRUE)
 
-# We focus on the minimal model (the one that minimized BIC)
-# Calculate leverage and Cook's distance
-leverage <- hatvalues(ols_minimal)
-cooks_d <- cooks.distance(ols_minimal)
+# Prune the tree
+pruned_tree <- prune(tree_model, cp = tree_model$cptable[which.min(tree_model$cptable[, "xerror"]), "CP"])
 
-# Define thresholds
-cooks_threshold <- 4 / (length(cooks_d) - 2)  # Common threshold for Cook's distance
-leverage_threshold <- 2 * mean(leverage)      # Common threshold for leverage
+# Plot the pruned tree
+plot(pruned_tree, uniform = TRUE, main = "Pruned Decision Tree for SIGI")
+text(pruned_tree, use.n = TRUE)
 
-# Identify observations above either threshold
-high_influence <- (cooks_d > cooks_threshold) | (leverage > leverage_threshold)
+# Predictions on training data
+train_pred_tree <- predict(tree_model, train, type = "vector")
+train_pred_pruned <- predict(pruned_tree, train, type = "vector")
+# Predictions on test data
+test_pred_tree <- predict(tree_model, test, type = "vector")
+test_pred_pruned <- predict(pruned_tree, test, type = "vector")
+
+# Calculate RMSE for training and test data
+rmse(train_pred_tree, train, "sigi")  # training full tree
+rmse(test_pred_tree, test, 'sigi')    # test full tree
+
+rmse(train_pred_pruned, train, "sigi")
+rmse(test_pred_pruned, test, "sigi") # pruned performs worse
+
+# Try CV to get a better Tree
+
+set.seed(42)  # same as before
+train_control <- trainControl(
+  method = "cv",        # Cross-validation
+  number = 10           # Number of folds
+)
+
+# Range of complexity parameter values
+cp_grid <- expand.grid(cp = seq(0.001, 0.1, by = 0.002))
+
+# Train the model
+tree_cv <- train(
+  sigi ~ ., 
+  data = train[, !names(train) %in% c("code", "region")],
+  method = "rpart",
+  trControl = train_control,
+  tuneGrid = cp_grid
+)
+
+# Print the results
+print(tree_cv)
+plot(tree_cv)
+
+# Best model parameters
+tree_cv$bestTune
+
+# Additional model details
+summary(tree_cv$finalModel)
+
+train_tree_cv <-  predict(tree_cv$finalModel, train, type = "vector")
+rmse(train_tree_cv, train, "sigi") # train error
+
+test_tree_cv <- predict(tree_cv$finalModel, test, type = 'vector')
+rmse(test_tree_cv, test, "sigi") # test error ~ worse
 
 
-# Final plot
-ggplot(train, aes(x = leverage, y = cooks_d)) +
-  geom_point(color = ifelse(high_influence, "red", "black")) +  # Points
-  geom_text_repel(aes(label = ifelse(high_influence, code, "")),  # Only label high influence points
-                  box.padding = 0.35, point.padding = 0.5,
-                  segment.color = 'grey50') +  # Adds lines to text for clarity
-  geom_hline(yintercept = cooks_threshold, color = "red", linetype = "dashed") +
-  geom_vline(xintercept = leverage_threshold, color = "blue", linetype = "dashed") +
-  labs(x = "Leverage (Hat values)", y = "Cook's Distance", title = "Cook's Distance vs. Leverage with Labels") +
-  theme_minimal()
+# Random Forest -----------------------------------------------------------
 
-# Standardized residuals and QQ plot
-std_residuals_lm <- rstandard(ols_minimal)
-plot(train$sigi, std_residuals_lm, xlab = "SIGI", ylab = "Standardized Residuals",
-     main = "Standardized Residuals vs. SIGI (LM)")
-abline(h = 0, col = "grey")
-lines(lowess(train$sigi, std_residuals_lm), col = "blue")
-abline(h = 3, col = "red", )
-abline(h = -3, col = 'red')
 
-# QQ plot
-qqnorm(std_residuals_lm, main = "Q-Q Plot of Standardized Residuals (LM)")
-qqline(std_residuals_lm, col = "red")
+set.seed(42) # same as before
 
-# are residuals normal?
-shapiro.test(std_residuals_lm) # yes they are
+# Define training control
+train_control <- trainControl(
+  method = "cv",                  # Cross-validation
+  number = 10,                    # Number of folds
+  savePredictions = "final",      # Save predictions for each fold
+  summaryFunction = defaultSummary  # Default summary uses RMSE, Rsquared, and MAE
+)
 
-# unsupervised models -----------------------------------------------------
+# Exclude non-predictive columns and train the model
+model_rf <- train(
+  sigi ~ ., 
+  data = train[, !names(train) %in% c("code", "region")],
+  method = "rf",
+  trControl = train_control,
+  metric = "RMSE"
+)
+
+# Print the results to show the RMSE from cross-validation
+print(model_rf$results) # mtry is the number of variables randomly selected as 
+                        # candidates at each split
+                        # MAE gives a simpler interpretation of average error magnitude.
+
+# Predict on the test data
+predictions <- predict(model_rf, newdata = test)
+
+# Calculate RMSE on test data
+test_rmse <-  rmse(predictions, test, "sigi")
+
+# Output RMSE for the test data
+print(paste("Test RMSE: ", test_rmse))
+
+# Plot actual vs predicted values for visual inspection
+plot(test$sigi, predictions, main = "Actual vs. Predicted SIGI",
+     xlab = "Actual SIGI", ylab = "Predicted SIGI")
+abline(0, 1, col = "red")  # Line showing perfect predictions
+
+
+# Unsupervised Models -----------------------------------------------------
 # PCA, then K-means 
 # PCA -> I use the dataset without train/test split #####
 
@@ -403,5 +612,84 @@ if (nrow(pc_data_high_pc2) > 0) {
 }
 
 
+# Hierarchical Clustering -------------------------------------------------
 
-# Hierarchical Clustering
+# Assuming data_an is the complete dataset
+
+# Step 1: Filter out non-numeric columns and remove rows with NAs
+data_for_clustering <- data_an[, sapply(data_an, is.numeric)]
+data_for_clustering <- data_for_clustering |> 
+  dplyr::select(-c(sigi, X))  # Excluding non-relevant numeric columns
+data_for_clustering <- na.omit(data_for_clustering)
+
+# Step 2: Standardize the data
+data_scaled <- scale(data_for_clustering)
+
+# Step 3: Compute the Euclidean distance matrix
+dist_matrix <- dist(data_scaled, method = "euclidean")
+
+# Step 4: Perform hierarchical clustering using the Ward's method
+hc <- hclust(dist_matrix, method = "ward.D2")
+
+# Step 5: Plot the dendrogram
+plot(hc, labels = FALSE, hang = -1, main = "Hierarchical Clustering Dendrogram")
+
+# Step 6: Cut the dendrogram to form clusters
+k <- 4  # Number of clusters
+clusters <- cutree(hc, k = k)
+
+# Step 7: Track rows used in clustering
+rows_with_data <- complete.cases(data_for_clustering)
+
+# Step 8: Create a cluster column in the original dataset initialized with NA
+data_an$cluster <- NA
+
+# Step 9: Assign clusters only to rows without NA
+data_an$cluster[rows_with_data] <- clusters
+
+# Step 10: Summary statistics by cluster
+# It's crucial to use the complete data_an with clusters for aggregation
+summary_stats <- aggregate(data_an[, sapply(data_an, is.numeric)], 
+                           by = list(cluster = data_an$cluster), 
+                           FUN = mean)
+
+# Print summary statistics
+print(summary_stats)
+
+
+# Plot the dendrogram
+plot(hc, labels = FALSE, main = "Hierarchical Clustering Dendrogram")
+
+# Retrieve the order of the leaves (indices of the original observations in the final order)
+leaf_order <- hc$order
+
+# Get the labels corresponding to the ordered leaves
+labels <- data_an$code[leaf_order]
+
+# Add labels at the bottom
+text(x = 1:length(leaf_order),  # x-coordinates are simply 1 to the number of leaves
+     y = par("usr")[3] - 0.5,  # slightly below the lower x-axis limit
+     labels = labels, 
+     srt = 45,  # angle of text rotation
+     adj = 1,  # adjust text alignment
+     xpd = NA,  # allow text to be placed outside plot region
+     cex = 0.5)  # adjust text size to fit (decrease if still overlapping)
+
+# Get countries for each cluster
+
+# Create an empty list to store country codes for each cluster
+cluster_codes <- vector("list", length = max(clusters))
+
+# Iterate over each cluster
+for (i in 1:max(clusters)) {
+  # Get country codes for the current cluster
+  cluster_codes[[i]] <- data_an$code[clusters == i]
+}
+
+# Display the country codes for each cluster
+for (i in 1:length(cluster_codes)) {
+  cat("Cluster", i, ": ", paste(cluster_codes[[i]], collapse = ", "), "\n")
+}
+
+# TODO: translate the codes to countries, comment on their summary statistics by cluster
+
