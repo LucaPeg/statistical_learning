@@ -22,6 +22,9 @@ After merging the dataset and creating a few derivative variables, we employ sup
 - Best Subset Selection
 - Ridge Regression
 - Lasso Regression
+- Decision Tree
+- Random Forest
 #### Unsupervised Techniques
 - PCA
 - K-Means of PCA's output
+- Hierarchical clustering
