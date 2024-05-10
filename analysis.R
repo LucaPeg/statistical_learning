@@ -26,6 +26,8 @@ library(randomForest)
 library(lattice)
 library(cluster)
 library(stargazer) # export to LaTeX
+library(xtable) # export to LaTeX
+library(rpart.plot) # plot trees
 
 # functions ---------------------------------------------------------------
 
@@ -89,7 +91,7 @@ data |> # Apparently democracies are on average less discriminatory
   geom_smooth(method = lm) 
 
 #general summary
-summary(data)
+xtable(summary(data_an))
 
 # correlations between variables
 
@@ -400,6 +402,7 @@ ridge.mod = glmnet(x, y, alpha = 0, lambda = grid, thresh = 1e-12)
 # CV to find optimal lambda
 cv.out = cv.glmnet(x, y, alpha = 0)
 bestlam = cv.out$lambda.min
+plot(cv.out)
 
 # Predict using the best lambda obtained from cross-validation
 ridge.train = predict(ridge.mod, s = bestlam, newx = x)
@@ -422,6 +425,7 @@ lasso.mod = glmnet(x, y, alpha = 1, lambda = grid)
 cv.out = cv.glmnet(x, y, alpha = 1)
 bestlam = cv.out$lambda.min
 
+plot(cv.out)
 # Predict using the best lambda obtained from cross-validation for Lasso
 lasso.train = predict(lasso.mod, s = bestlam, newx = x)
 lasso.pred = predict(lasso.mod, s = bestlam, newx = x.test)
@@ -433,8 +437,6 @@ print(rmse_lasso) # test error
 
 # Print coefficients at best lambda for Lasso
 print(coef(lasso.mod, s = bestlam))
-
-
 
 # Trees -------------------------------------------------------------------
 tree_model <- rpart(sigi ~ ., data = train[, !names(train) %in% c("code", "region")], 
@@ -463,6 +465,12 @@ rmse(test_pred_tree, test, 'sigi')    # test full tree
 
 rmse(train_pred_pruned, train, "sigi")
 rmse(test_pred_pruned, test, "sigi") # pruned performs worse
+
+# plot of the full tree
+rpart.plot(tree_model)
+rpart.plot(pruned_tree)
+
+
 
 # Try CV to get a better Tree
 
@@ -557,7 +565,7 @@ dummies <- data_an[,c("relChristian","relMuslim","opec")]
 # Numeric attributes
 numeric_data <- data_an[, !(names(data_an) # we drop sigi as well
                             %in% c("code","region","relChristian",
-                                   "relMuslim", "opec", "X", "sigi"))] 
+                                   "relMuslim", "opec", "X", "sigi", "train_index"))] 
 
 # normalize numeric data
 scaled_numeric_data <- scale(numeric_data)
@@ -566,6 +574,7 @@ scaled_numeric_data <- cbind(scaled_numeric_data, dummies)
 # merge the dataset back together
 final_data <- cbind(categorical_data, scaled_numeric_data)
 
+
 # Perform PCA
 pca_result <- prcomp(scaled_numeric_data)
 # Create a dataframe of the PCA scores
@@ -573,10 +582,11 @@ pca_scores <- as.data.frame(pca_result$x)
 # Add back the categorical data for plotting
 plot_data <- cbind(pca_scores, categorical_data)
 
+
 # Plotting the first two principal components with ggplot2
 ggplot(plot_data, aes(x = PC1, y = PC2, color = region)) +
   geom_point(alpha = 0.5) +
-  labs(title = "PCA of Dataset", x = "Principal Component 1", y = "Principal Component 2") +
+  labs(title = "Scatterplot of the first two prinicpal components", x = "Principal Component 1", y = "Principal Component 2") +
   theme_minimal()
 
 # Scree plot
@@ -584,12 +594,13 @@ plot(pca_result$sdev^2, type = 'b', main = "Scree Plot", xlab = "Principal Compo
 # Biplot of the first two PCs
 biplot(pca_result)
 
+xtable(pca_result$rotation[,1:2])
 # K-MEANS ####
 # Using the first two principal components
 pc_data <- pca_result$x[, 1:2]
 
 # K-means clustering
-set.seed(123)  # for reproducibility
+set.seed(42)  # for reproducibility
 kmeans_result <- kmeans(pc_data, centers = 2)  # two clusters
 
 # Plotting K-means results
@@ -611,41 +622,35 @@ if (nrow(pc_data_high_pc2) > 0) {
 
 # Hierarchical Clustering -------------------------------------------------
 
-# Assuming data_an is the complete dataset
+# Data preparation
 
-# Step 1: Filter out non-numeric columns and remove rows with NAs
+numeric_data <- data_an[, !(names(data_an) # we drop sigi as well
+                            %in% c("code","region","relChristian",
+                                   "relMuslim", "opec", "X", "sigi", "train_index"))] 
+
 data_for_clustering <- data_an[, sapply(data_an, is.numeric)]
 data_for_clustering <- data_for_clustering |> 
   dplyr::select(-c(sigi, X))  # Excluding non-relevant numeric columns
 data_for_clustering <- na.omit(data_for_clustering)
 
-# Step 2: Standardize the data
-data_scaled <- scale(data_for_clustering)
 
-# Step 3: Compute the Euclidean distance matrix
+data_scaled <- scale(data_for_clustering)
 dist_matrix <- dist(data_scaled, method = "euclidean")
 
-# Step 4: Perform hierarchical clustering using the Ward's method
+# Perform hierarchical clustering using the Ward's method
 hc <- hclust(dist_matrix, method = "ward.D2")
 
-# Step 5: Plot the dendrogram
 plot(hc, labels = FALSE, hang = -1, main = "Hierarchical Clustering Dendrogram")
 
-# Step 6: Cut the dendrogram to form clusters
-k <- 4  # Number of clusters
+# Cut the dendrogram to form clusters
+k <- 3  # Number of clusters
 clusters <- cutree(hc, k = k)
 
-# Step 7: Track rows used in clustering
+#Track rows used in clustering
 rows_with_data <- complete.cases(data_for_clustering)
-
-# Step 8: Create a cluster column in the original dataset initialized with NA
 data_an$cluster <- NA
-
-# Step 9: Assign clusters only to rows without NA
 data_an$cluster[rows_with_data] <- clusters
 
-# Step 10: Summary statistics by cluster
-# It's crucial to use the complete data_an with clusters for aggregation
 summary_stats <- aggregate(data_an[, sapply(data_an, is.numeric)], 
                            by = list(cluster = data_an$cluster), 
                            FUN = mean)
@@ -688,5 +693,4 @@ for (i in 1:length(cluster_codes)) {
   cat("Cluster", i, ": ", paste(cluster_codes[[i]], collapse = ", "), "\n")
 }
 
-# TODO: translate the codes to countries, comment on their summary statistics by cluster
 
