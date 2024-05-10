@@ -25,6 +25,7 @@ library(rpart) # trees
 library(randomForest)
 library(lattice)
 library(cluster)
+library(stargazer) # export to LaTeX
 
 # functions ---------------------------------------------------------------
 
@@ -212,9 +213,10 @@ val.errors=rep(NA,6)
 # Best model according to BIC
 ols_minimal = lm(sigi~fragility+relMuslim, data = train) # lm_robust is the same
 summary(ols_minimal)# if lsigi BIC takes "gini" as well
+
 summary(rr.minimal <- rlm(sigi ~ fragility + relMuslim, data = train)) # robust
 
-
+stargazer(ols_minimal, type = "latex") # export table
 # Compute the VIF of the model
 vif_minimal= vif(lm(sigi~fragility + relMuslim, data = train))
 vif_minimal #very low, unlike with best adjr2 model
@@ -223,6 +225,7 @@ vif_minimal #very low, unlike with best adjr2 model
 best.adjr2 <-  lm(sigi ~ cpi+opec+gini+urb+relMuslim+fragility,data = train)
 summary(best.adjr2) # just 0.02 improvement on Adjr2 with 4 additional vars
 
+stargazer(best.adjr2, type = "latex") 
 # The VIF is pretty high for many variables (cpi & fragility)
 vif_best.adjr2 <- vif(lm(sigi ~ cpi+ opec +fragility + gini + relMuslim + urb, # - urb if lsigi
                                 data = train))
@@ -409,12 +412,6 @@ print(rmse.ridge) # test error is slightly better than the minimal model
 
 # Coefficients at with best lambda
 print(coef(ridge.mod, s = bestlam))
-
-
-
-
-
-
 
 # Lasso -------------------------------------------------------------------
 
